@@ -47,6 +47,54 @@ TRACKING_QUERY_KEYS = {
     "campaign",
 }
 
+# Sources and page types that commonly discuss vouchers but do not offer one.
+BLOCKED_SOURCE_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "youtu.be",
+    "reddit.com",
+    "www.reddit.com",
+    "facebook.com",
+    "www.facebook.com",
+    "instagram.com",
+    "www.instagram.com",
+    "tiktok.com",
+    "www.tiktok.com",
+}
+BLOCKED_SOURCE_PATH_PATTERNS = (
+    re.compile(r"^/(?:[a-z]{2}(?:-[a-z]{2})?/)?answers/", re.IGNORECASE),
+    re.compile(r"^/questions/", re.IGNORECASE),
+)
+QUESTION_OR_ADVICE_RE = re.compile(
+    r"\b(?:how (?:do|can|to) (?:i|you)|where can i|como (?:eu )?(?:consigo|obter|ganhar)|"
+    r"is there (?:a|any)|keep an eye on|watch for upcoming|may offer|might offer|"
+    r"you can participate in|for example|ask a question|community answer|microsoft q&a)\b",
+    re.IGNORECASE,
+)
+OPEN_REGISTRATION_RE = re.compile(
+    r"\b(?:registration is open|registrations? are open|now open for registration|"
+    r"register now|apply now|enroll now|inscri[cç][oõ]es abertas|inscreva-se agora|"
+    r"cadastre-se agora|vagas abertas)\b",
+    re.IGNORECASE,
+)
+CLOSED_OR_ARCHIVE_RE = re.compile(
+    r"\b(?:archive|archived|past event|event has ended|this event has ended|"
+    r"session ended|on-demand recording|watch the recording|grava[cç][aã]o do evento)\b",
+    re.IGNORECASE,
+)
+REGISTRATION_HOSTS = (
+    "events.microsoft.com",
+    "event.on24.com",
+    "mktoevents.com",
+    "certweeks.fastlane.net",
+    "fastlane.net",
+    "dio.me",
+    "aka.ms",
+    "pearsonvue.com",
+    "forms.office.com",
+    "forms.microsoft.com",
+)
+
 
 @dataclass(slots=True)
 class SearchHit:
@@ -252,6 +300,9 @@ def unique_hits(hits: Iterable[SearchHit]) -> list[SearchHit]:
 
 
 def search_tavily(api_key: str, query: str, config: dict[str, Any]) -> list[SearchHit]:
+    api_key = clean_space(api_key).strip()
+    if not api_key or any(ch in api_key for ch in "\r\n\t"):
+        raise ValueError("TAVILY_API_KEY contém espaço, tabulação ou quebra de linha inválida")
     payload: dict[str, Any] = {
         "query": query,
         "search_depth": config.get("search_depth", "basic"),
@@ -818,6 +869,34 @@ def make_excerpt(text: str, evidence: list[str], limit: int = 430) -> str:
     return base[: limit - 1].rstrip() + "…"
 
 
+
+def source_rejection_reason(url: str, title: str, text: str) -> str | None:
+    """Return a reason when the result is commentary/support, not an offer page."""
+    normalized = normalize_url(url)
+    split = urlsplit(normalized)
+    host = split.netloc.lower()
+    path = split.path or "/"
+    if host in BLOCKED_SOURCE_HOSTS:
+        return f"fonte bloqueada para alertas ({host})"
+    if host.endswith("learn.microsoft.com") and any(p.search(path) for p in BLOCKED_SOURCE_PATH_PATTERNS):
+        return "Microsoft Q&A é suporte comunitário, não página de campanha"
+    folded = fold_text(f"{title} {text}")
+    if QUESTION_OR_ADVICE_RE.search(folded):
+        return "conteúdo parece pergunta, conselho ou referência genérica, não oferta ativa"
+    if CLOSED_OR_ARCHIVE_RE.search(folded):
+        return "página indica evento encerrado, gravação ou arquivo"
+    return None
+
+
+def is_registration_page(url: str, text: str) -> bool:
+    split = urlsplit(normalize_url(url))
+    host = split.netloc.lower()
+    path_query = fold_text(f"{split.path} {split.query}")
+    host_ok = any(host == h or host.endswith("." + h) for h in REGISTRATION_HOSTS)
+    path_ok = bool(re.search(r"(?:register|registration|signup|sign-up|enroll|apply|claim|redeem|inscri|cadastro)", path_query))
+    return host_ok and (path_ok or bool(OPEN_REGISTRATION_RE.search(fold_text(text))))
+
+
 def build_candidate(
     hit: SearchHit,
     config: dict[str, Any],
@@ -825,6 +904,11 @@ def build_candidate(
 ) -> Candidate | None:
     page_text, links, final_url = fetch_page(hit.url)
     combined = clean_space(" ".join([hit.title, hit.content, hit.raw_content, page_text]))
+    effective_url = final_url or hit.url
+    rejection = source_rejection_reason(effective_url, hit.title, combined)
+    if rejection:
+        LOGGER.info("Rejeitado [%s]: %s", hit.title, rejection)
+        return None
     evaluation = evaluate_offer(combined, now, int(config.get("min_score", 8)))
     if not evaluation.is_candidate:
         LOGGER.info(
@@ -844,7 +928,25 @@ def build_candidate(
         LOGGER.info("Rejeitado [%s]: resultado publicado em %s sem data futura", hit.title, published_date)
         return None
 
-    signup_url, signup_score = rank_signup_link(final_url or hit.url, links)
+    signup_url, signup_score = rank_signup_link(effective_url, links)
+    source_is_registration = is_registration_page(effective_url, combined)
+    if signup_score < 5 and not source_is_registration:
+        LOGGER.info("Rejeitado [%s]: nenhum link verificável de inscrição/resgate", hit.title)
+        return None
+
+    has_future_registration = any(
+        signal.value >= now.date() and signal.is_registration and not signal.is_redemption
+        for signal in evaluation.dates
+    )
+    has_future_event = any(
+        signal.value >= now.date() and not signal.is_deadline and not signal.is_redemption
+        for signal in evaluation.dates
+    )
+    explicit_open = bool(OPEN_REGISTRATION_RE.search(fold_text(combined)))
+    if not (has_future_registration or has_future_event or explicit_open):
+        LOGGER.info("Rejeitado [%s]: inscrição ativa não pôde ser confirmada", hit.title)
+        return None
+
     reasons = list(evaluation.reasons)
     warnings = list(evaluation.warnings)
     adjusted_score = evaluation.score
@@ -852,9 +954,11 @@ def build_candidate(
         adjusted_score += 3
         reasons.append("link específico de inscrição identificado")
     else:
-        warnings.append("o link leva à página da oferta; confirme nela o botão de inscrição")
+        signup_url = effective_url
+        adjusted_score += 2
+        reasons.append("a própria fonte é uma página de inscrição")
 
-    source_host = urlsplit(final_url or hit.url).netloc.lower()
+    source_host = urlsplit(effective_url).netloc.lower()
     trusted_domains = tuple(str(item).lower() for item in config.get("trusted_domains", []))
     is_trusted_source = any(
         source_host == domain or source_host.endswith("." + domain) for domain in trusted_domains
@@ -879,7 +983,7 @@ def build_candidate(
     fingerprint_input = json.dumps(
         {
             "title": fold_text(hit.title),
-            "source": normalize_url(final_url or hit.url),
+            "source": normalize_url(effective_url),
             "signup": normalize_url(signup_url),
             "future_dates": future_dates,
             "evidence": [fold_text(item)[:240] for item in evidence],
@@ -890,7 +994,7 @@ def build_candidate(
     fingerprint = hashlib.sha256(fingerprint_input.encode("utf-8")).hexdigest()
     return Candidate(
         title=hit.title,
-        source_url=normalize_url(final_url or hit.url),
+        source_url=normalize_url(effective_url),
         signup_url=normalize_url(signup_url),
         confidence=confidence,
         score=adjusted_score,
