@@ -1,0 +1,29 @@
+{
+  "queries": [
+    "Azure certification \"100% discount\" voucher registration",
+    "Azure certification \"free exam voucher\" registration",
+    "Microsoft Certification Week Azure voucher registration",
+    "voucher gratuito certificação Azure inscrição exame",
+    "\"any Microsoft Certification Exam\" free voucher registration",
+    "site:certweeks.fastlane.net Microsoft free exam voucher Azure"
+  ],
+  "search_depth": "basic",
+  "chunks_per_source": 3,
+  "max_results_per_query": 8,
+  "time_range": "year",
+  "country": null,
+  "min_score": 8,
+  "high_confidence_score": 15,
+  "alert_cooldown_days": 7,
+  "stale_result_days": 450,
+  "trusted_domains": [
+    "microsoft.com",
+    "learn.microsoft.com",
+    "events.microsoft.com",
+    "news.microsoft.com",
+    "techcommunity.microsoft.com",
+    "certweeks.fastlane.net",
+    "fastlane.net",
+    "dio.me"
+  ]
+}
