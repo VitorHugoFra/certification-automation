@@ -362,6 +362,10 @@ AZURE_CODE_RE = re.compile(r"\b(?:az|ai|dp)-\d{3}\b", re.IGNORECASE)
 BLOCKED_SOURCE_HOSTS = (
     "youtube.com", "youtu.be", "reddit.com", "facebook.com", "instagram.com",
     "tiktok.com", "x.com", "twitter.com",
+    # Exam-dump / prep marketplaces are not voucher issuers. Their "free exam"
+    # wording usually refers to study material, not a free certification attempt.
+    "examtopics.com", "examcollection.com", "exam-labs.com", "pass4sure.com",
+    "testking.com", "actual4test.com",
 )
 BLOCKED_SOURCE_PATHS = ("/answers/", "/questions/", "/q/", "/forum/")
 QUESTION_STYLE_RE = re.compile(
@@ -371,6 +375,14 @@ QUESTION_STYLE_RE = re.compile(
 SPECULATIVE_RE = re.compile(
     r"\b(?:may offer|might offer|can offer|could offer|keep an eye|watch for upcoming|"
     r"fique atento|podem oferecer|pode oferecer|talvez ofereca|talvez ofereça)\b", re.IGNORECASE
+)
+STUDY_MATERIAL_RE = re.compile(
+    r"\b(?:exam material|certification exam material|study material|study guide|exam prep|"
+    r"practice questions?|practice tests?|exam questions?|exam dumps?|braindumps?|dumps?|"
+    r"questions and answers|q\s*&\s*a|mock exam|sample questions?|premium access|"
+    r"material de estudo|material para prova|preparacao para exame|preparação para exame|"
+    r"questoes? de prova|questões? de prova|simulados?|banco de questoes|banco de questões)\b",
+    re.IGNORECASE,
 )
 STRONG_OFFER_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
@@ -902,8 +914,13 @@ def build_candidate(
         LOGGER.info("Rejeitado [%s]: redirecionou para fonte bloqueada", hit.title)
         return None
     combined = clean_space(" ".join([hit.title, hit.content, hit.raw_content, page_text]))
-    if QUESTION_STYLE_RE.search(fold_text(hit.title)) or SPECULATIVE_RE.search(fold_text(combined)):
+    folded_title = fold_text(hit.title)
+    folded_combined = fold_text(combined)
+    if QUESTION_STYLE_RE.search(folded_title) or SPECULATIVE_RE.search(folded_combined):
         LOGGER.info("Rejeitado [%s]: pagina de pergunta ou linguagem especulativa", hit.title)
+        return None
+    if STUDY_MATERIAL_RE.search(folded_title) or STUDY_MATERIAL_RE.search(folded_combined):
+        LOGGER.info("Rejeitado [%s]: material de estudo/preparacao, nao voucher de exame", hit.title)
         return None
     evaluation = evaluate_offer(combined, now, int(config.get("min_score", 8)))
     if not evaluation.is_candidate:
@@ -956,7 +973,21 @@ def build_candidate(
         adjusted_score += 2
         reasons.append("fonte oficial ou parceira conhecida")
     else:
-        warnings.append("fonte não oficial; confirme a oferta no site da Microsoft ou do organizador")
+        # Conservative rule: an untrusted article is only alert-worthy when its
+        # registration link leaves that site and lands on a trusted organizer.
+        signup_host = urlsplit(normalize_url(signup_url)).netloc.lower()
+        signup_is_trusted = any(
+            signup_host == domain or signup_host.endswith("." + domain) for domain in trusted_domains
+        )
+        if not signup_is_trusted:
+            LOGGER.info(
+                "Rejeitado [%s]: fonte nao oficial sem link de inscricao em organizador confiavel",
+                hit.title,
+            )
+            return None
+        adjusted_score += 1
+        reasons.append("fonte secundária aponta para inscrição em domínio confiável")
+        warnings.append("fonte não oficial; valide os termos na página oficial de inscrição")
 
     high_threshold = int(config.get("high_confidence_score", 15))
     scope_uncertain = any("quais exames Azure" in item for item in warnings)
