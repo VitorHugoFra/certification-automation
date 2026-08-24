@@ -1,11 +1,17 @@
 {
   "queries": [
-    "Azure certification \"100% discount\" voucher registration",
-    "Azure certification \"free exam voucher\" registration",
-    "Microsoft Certification Week Azure voucher registration",
-    "voucher gratuito certificação Azure inscrição exame",
-    "\"any Microsoft Certification Exam\" free voucher registration",
-    "site:certweeks.fastlane.net Microsoft free exam voucher Azure"
+    "Microsoft certification 100% free exam voucher registration Azure GitHub 2026",
+    "Microsoft free certification exam voucher registration AZ-400 AZ-104 AI-200",
+    "Microsoft Certification Week 100% voucher registration Azure DevOps",
+    "GitHub certification free exam voucher GitHub Actions registration",
+    "GitHub Actions certification 100% discount voucher registration",
+    "GitHub Foundations free certification voucher registration",
+    "GitHub Advanced Security free certification voucher registration",
+    "GitHub Copilot certification free voucher registration",
+    "voucher gratuito certificacao Microsoft Azure GitHub inscricao exame",
+    "site:certweeks.fastlane.net Microsoft free exam voucher registration",
+    "site:learn.github.com free certification voucher registration",
+    "site:events.microsoft.com certification free exam voucher registration"
   ],
   "search_depth": "basic",
   "chunks_per_source": 3,
@@ -13,17 +19,79 @@
   "time_range": "year",
   "country": null,
   "min_score": 8,
-  "high_confidence_score": 15,
+  "high_confidence_score": 18,
   "alert_cooldown_days": 7,
-  "stale_result_days": 450,
+  "stale_result_days": 365,
   "trusted_domains": [
     "microsoft.com",
     "learn.microsoft.com",
     "events.microsoft.com",
     "news.microsoft.com",
     "techcommunity.microsoft.com",
+    "github.com",
+    "docs.github.com",
+    "learn.github.com",
     "certweeks.fastlane.net",
     "fastlane.net",
-    "dio.me"
+    "dio.me",
+    "pearsonvue.com"
+  ],
+  "career_targets": [
+    {
+      "label": "GitHub Actions",
+      "priority": "essencial",
+      "weight": 12,
+      "reason": "fortalece CI/CD, automacao e GitHub no seu perfil .NET",
+      "patterns": ["github\\s+actions", "certification[/ -]?actions", "\\bactions\\b.{0,50}\\bgithub\\b"]
+    },
+    {
+      "label": "AZ-400 - DevOps Engineer Expert",
+      "priority": "essencial",
+      "weight": 12,
+      "reason": "combina diretamente com Azure DevOps, CI/CD, GitHub e desenvolvimento",
+      "patterns": ["\\baz-400\\b", "devops engineer expert", "designing and implementing microsoft devops solutions"]
+    },
+    {
+      "label": "GitHub Advanced Security",
+      "priority": "alta",
+      "weight": 10,
+      "reason": "adiciona seguranca de pipelines e repositorios ao seu perfil de desenvolvimento",
+      "patterns": ["github advanced security", "\\bghas\\b"]
+    },
+    {
+      "label": "AI-200 - Azure AI Cloud Developer Associate",
+      "priority": "alta",
+      "weight": 10,
+      "reason": "nova certificacao de desenvolvedor Azure com foco em backend, containers e IA",
+      "patterns": ["\\bai-200\\b", "azure ai cloud developer associate", "desenvolvedor associado de ia na nuvem do azure"]
+    },
+    {
+      "label": "GitHub Copilot",
+      "priority": "alta",
+      "weight": 9,
+      "reason": "complementa produtividade de desenvolvimento e uso profissional de IA",
+      "patterns": ["github copilot", "copilot certification"]
+    },
+    {
+      "label": "AZ-104 - Azure Administrator Associate",
+      "priority": "media",
+      "weight": 7,
+      "reason": "fortalece base de Azure util para backend e DevOps",
+      "patterns": ["\\baz-104\\b", "azure administrator associate", "administrador de azure associado"]
+    },
+    {
+      "label": "GitHub Foundations",
+      "priority": "media",
+      "weight": 6,
+      "reason": "e gratuita vale como validacao oficial de Git/GitHub, embora seja basica para sua experiencia",
+      "patterns": ["github foundations", "foundations certification"]
+    },
+    {
+      "label": "AZ-900 - Azure Fundamentals",
+      "priority": "baixa",
+      "weight": 4,
+      "reason": "e basica para seu nivel, mas ainda agrega uma credencial Azure se for 100% gratuita",
+      "patterns": ["\\baz-900\\b", "azure fundamentals"]
+    }
   ]
 }
