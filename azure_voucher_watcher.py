@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Monitor the web for active Microsoft Azure certification exam vouchers.
+"""Monitor the web for active 100% free certification exam vouchers relevant to a .NET developer career.
 
 The watcher searches the web through Tavily, applies conservative heuristics to
-reject partial discounts and expired campaigns, and sends new opportunities by
-email and/or Telegram. It is designed to run on a GitHub Actions schedule.
+reject partial discounts, expired campaigns, discussion pages and low-value offers,
+then ranks opportunities against a configurable career profile (Microsoft/Azure/GitHub).
+It sends only new, relevant opportunities by email and/or Telegram and is designed
+to run on a GitHub Actions schedule.
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-LOGGER = logging.getLogger("azure-voucher-watcher")
+LOGGER = logging.getLogger("career-voucher-watcher")
 DEFAULT_CONFIG = Path(__file__).with_name("config.json")
 DEFAULT_STATE = Path(__file__).with_name("data") / "seen.json"
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
@@ -46,54 +48,6 @@ TRACKING_QUERY_KEYS = {
     "source",
     "campaign",
 }
-
-# Sources and page types that commonly discuss vouchers but do not offer one.
-BLOCKED_SOURCE_HOSTS = {
-    "youtube.com",
-    "www.youtube.com",
-    "youtu.be",
-    "reddit.com",
-    "www.reddit.com",
-    "facebook.com",
-    "www.facebook.com",
-    "instagram.com",
-    "www.instagram.com",
-    "tiktok.com",
-    "www.tiktok.com",
-}
-BLOCKED_SOURCE_PATH_PATTERNS = (
-    re.compile(r"^/(?:[a-z]{2}(?:-[a-z]{2})?/)?answers/", re.IGNORECASE),
-    re.compile(r"^/questions/", re.IGNORECASE),
-)
-QUESTION_OR_ADVICE_RE = re.compile(
-    r"\b(?:how (?:do|can|to) (?:i|you)|where can i|como (?:eu )?(?:consigo|obter|ganhar)|"
-    r"is there (?:a|any)|keep an eye on|watch for upcoming|may offer|might offer|"
-    r"you can participate in|for example|ask a question|community answer|microsoft q&a)\b",
-    re.IGNORECASE,
-)
-OPEN_REGISTRATION_RE = re.compile(
-    r"\b(?:registration is open|registrations? are open|now open for registration|"
-    r"register now|apply now|enroll now|inscri[cç][oõ]es abertas|inscreva-se agora|"
-    r"cadastre-se agora|vagas abertas)\b",
-    re.IGNORECASE,
-)
-CLOSED_OR_ARCHIVE_RE = re.compile(
-    r"\b(?:archive|archived|past event|event has ended|this event has ended|"
-    r"session ended|on-demand recording|watch the recording|grava[cç][aã]o do evento)\b",
-    re.IGNORECASE,
-)
-REGISTRATION_HOSTS = (
-    "events.microsoft.com",
-    "event.on24.com",
-    "mktoevents.com",
-    "certweeks.fastlane.net",
-    "fastlane.net",
-    "dio.me",
-    "aka.ms",
-    "pearsonvue.com",
-    "forms.office.com",
-    "forms.microsoft.com",
-)
 
 
 @dataclass(slots=True)
@@ -141,6 +95,9 @@ class Candidate:
     excerpt: str
     future_dates: list[str]
     fingerprint: str
+    career_priority: str = ""
+    matched_certifications: list[str] = field(default_factory=list)
+    career_reason: str = ""
 
 
 class PageParser(HTMLParser):
@@ -300,9 +257,6 @@ def unique_hits(hits: Iterable[SearchHit]) -> list[SearchHit]:
 
 
 def search_tavily(api_key: str, query: str, config: dict[str, Any]) -> list[SearchHit]:
-    api_key = clean_space(api_key).strip()
-    if not api_key or any(ch in api_key for ch in "\r\n\t"):
-        raise ValueError("TAVILY_API_KEY contém espaço, tabulação ou quebra de linha inválida")
     payload: dict[str, Any] = {
         "query": query,
         "search_depth": config.get("search_depth", "basic"),
@@ -323,7 +277,7 @@ def search_tavily(api_key: str, query: str, config: dict[str, Any]) -> list[Sear
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "User-Agent": "azure-voucher-watcher/1.0",
+            "User-Agent": "career-voucher-watcher/3.0",
         },
         json=payload,
         timeout=env_int("SEARCH_TIMEOUT_SECONDS", 45),
@@ -362,7 +316,7 @@ def fetch_page(url: str) -> tuple[str, list[tuple[str, str]], str]:
             url,
             headers={
                 "User-Agent": (
-                    "Mozilla/5.0 (compatible; AzureVoucherWatcher/1.0; "
+                    "Mozilla/5.0 (compatible; CareerVoucherWatcher/3.0; "
                     "+https://github.com/)"
                 ),
                 "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
@@ -402,7 +356,22 @@ def fetch_page(url: str) -> tuple[str, list[tuple[str, str]], str]:
         return "", [], normalize_url(url)
 
 
+CERT_CODE_RE = re.compile(r"\b(?:az|ai|dp|sc|pl|ms|gh)-\d{3}\b", re.IGNORECASE)
 AZURE_CODE_RE = re.compile(r"\b(?:az|ai|dp)-\d{3}\b", re.IGNORECASE)
+
+BLOCKED_SOURCE_HOSTS = (
+    "youtube.com", "youtu.be", "reddit.com", "facebook.com", "instagram.com",
+    "tiktok.com", "x.com", "twitter.com",
+)
+BLOCKED_SOURCE_PATHS = ("/answers/", "/questions/", "/q/", "/forum/")
+QUESTION_STYLE_RE = re.compile(
+    r"\b(?:how (?:do|can) i|get a free voucher|where can i|get free voucher|como (?:consigo|obter)|"
+    r"onde (?:consigo|achar)|voucher question|free voucher question)\b", re.IGNORECASE
+)
+SPECULATIVE_RE = re.compile(
+    r"\b(?:may offer|might offer|can offer|could offer|keep an eye|watch for upcoming|"
+    r"fique atento|podem oferecer|pode oferecer|talvez ofereca|talvez ofereça)\b", re.IGNORECASE
+)
 STRONG_OFFER_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
         "menciona desconto de 100%",
@@ -432,6 +401,7 @@ WEAK_OFFER_RE = re.compile(
     re.IGNORECASE,
 )
 AZURE_RE = re.compile(r"\b(?:microsoft\s+azure|azure)\b", re.IGNORECASE)
+GITHUB_RE = re.compile(r"\bgithub\b", re.IGNORECASE)
 MICROSOFT_CERT_RE = re.compile(
     r"\b(?:microsoft certification|microsoft certified|certificacao microsoft|certificação microsoft)\b",
     re.IGNORECASE,
@@ -674,13 +644,17 @@ def evaluate_offer(text: str, now: datetime | None = None, min_score: int = 8) -
     evidence: list[str] = []
 
     has_azure_word = bool(AZURE_RE.search(normalized))
+    has_github_word = bool(GITHUB_RE.search(normalized))
     exam_codes = sorted(set(code.upper() for code in AZURE_CODE_RE.findall(normalized)))
     any_ms_exam = bool(ANY_MS_EXAM_RE.search(normalized))
     generic_ms_voucher = bool(GENERIC_MS_VOUCHER_RE.search(normalized))
-    has_azure = has_azure_word or bool(exam_codes) or any_ms_exam or generic_ms_voucher
+    has_azure = has_azure_word or has_github_word or bool(exam_codes) or any_ms_exam or generic_ms_voucher
     if has_azure_word:
         score += 4
         reasons.append("cita Microsoft Azure")
+    if has_github_word:
+        score += 4
+        reasons.append("cita GitHub")
     if exam_codes:
         score += 3
         reasons.append("cita exame Azure: " + ", ".join(exam_codes[:6]))
@@ -794,7 +768,7 @@ def evaluate_offer(text: str, now: datetime | None = None, min_score: int = 8) -
 
     if not has_azure:
         score -= 12
-        warnings.append("não foi possível confirmar relação direta com Azure")
+        warnings.append("não foi possível confirmar relação direta com Microsoft/Azure/GitHub")
     if not has_strong_offer:
         score -= 5
     is_candidate = bool(
@@ -812,6 +786,52 @@ def evaluate_offer(text: str, now: datetime | None = None, min_score: int = 8) -
         dates=dates,
     )
 
+
+
+def _host_is_blocked(url: str) -> bool:
+    split = urlsplit(normalize_url(url))
+    host = split.netloc.lower()
+    path = split.path.lower()
+    if any(host == item or host.endswith("." + item) for item in BLOCKED_SOURCE_HOSTS):
+        return True
+    if "learn.microsoft.com" in host and any(item in path for item in BLOCKED_SOURCE_PATHS):
+        return True
+    return False
+
+
+def career_match(text: str, config: dict[str, Any]) -> tuple[int, str, list[str], list[str]]:
+    """Return career score, priority, matched cert labels and human rationale."""
+    folded = fold_text(text)
+    profiles = config.get("career_targets") or []
+    matched: list[tuple[int, str, str, str]] = []
+    for item in profiles:
+        if not isinstance(item, dict) or not item.get("enabled", True):
+            continue
+        patterns = [str(p) for p in item.get("patterns", [])]
+        if not patterns:
+            continue
+        if any(re.search(pattern, folded, re.IGNORECASE) for pattern in patterns):
+            weight = int(item.get("weight", 0))
+            matched.append((weight, str(item.get("priority", "media")), str(item.get("label", "certificacao")), str(item.get("reason", ""))))
+    if not matched:
+        return 0, "", [], []
+    matched.sort(reverse=True)
+    score = max(x[0] for x in matched)
+    priority_order = {"essencial": 4, "alta": 3, "media": 2, "baixa": 1}
+    priority = max((x[1] for x in matched), key=lambda x: priority_order.get(x, 0))
+    labels = list(dict.fromkeys(x[2] for x in matched))
+    reasons = list(dict.fromkeys(x[3] for x in matched if x[3]))
+    return score, priority, labels, reasons
+
+
+def generic_career_scope(text: str, config: dict[str, Any]) -> tuple[int, str, list[str], list[str]]:
+    """Handle vouchers valid for any Microsoft or GitHub certification."""
+    folded = fold_text(text)
+    if re.search(r"\\b(?:any|all|qualquer|todos os)\\b.{0,60}\\bmicrosoft\\b.{0,80}\\b(?:exam|certification|exame|certificacao)\\b", folded):
+        return 8, "alta", ["Qualquer certificacao Microsoft"], ["voucher amplo da Microsoft pode ser aplicado a certificacoes prioritarias do perfil"]
+    if re.search(r"\\b(?:any|all|qualquer|todos os)\\b.{0,60}\\bgithub\\b.{0,80}\\b(?:exam|certification|exame|certificacao)\\b", folded):
+        return 8, "alta", ["Qualquer certificacao GitHub"], ["voucher amplo do GitHub pode ser aplicado a certificacoes prioritarias do perfil"]
+    return 0, "", [], []
 
 def rank_signup_link(source_url: str, links: list[tuple[str, str]]) -> tuple[str, int]:
     source = normalize_url(source_url)
@@ -869,56 +889,39 @@ def make_excerpt(text: str, evidence: list[str], limit: int = 430) -> str:
     return base[: limit - 1].rstrip() + "…"
 
 
-
-def source_rejection_reason(url: str, title: str, text: str) -> str | None:
-    """Return a reason when the result is commentary/support, not an offer page."""
-    normalized = normalize_url(url)
-    split = urlsplit(normalized)
-    host = split.netloc.lower()
-    path = split.path or "/"
-    if host in BLOCKED_SOURCE_HOSTS:
-        return f"fonte bloqueada para alertas ({host})"
-    if host.endswith("learn.microsoft.com") and any(p.search(path) for p in BLOCKED_SOURCE_PATH_PATTERNS):
-        return "Microsoft Q&A é suporte comunitário, não página de campanha"
-    folded = fold_text(f"{title} {text}")
-    if QUESTION_OR_ADVICE_RE.search(folded):
-        return "conteúdo parece pergunta, conselho ou referência genérica, não oferta ativa"
-    if CLOSED_OR_ARCHIVE_RE.search(folded):
-        return "página indica evento encerrado, gravação ou arquivo"
-    return None
-
-
-def is_registration_page(url: str, text: str) -> bool:
-    split = urlsplit(normalize_url(url))
-    host = split.netloc.lower()
-    path_query = fold_text(f"{split.path} {split.query}")
-    host_ok = any(host == h or host.endswith("." + h) for h in REGISTRATION_HOSTS)
-    path_ok = bool(re.search(r"(?:register|registration|signup|sign-up|enroll|apply|claim|redeem|inscri|cadastro)", path_query))
-    return host_ok and (path_ok or bool(OPEN_REGISTRATION_RE.search(fold_text(text))))
-
-
 def build_candidate(
     hit: SearchHit,
     config: dict[str, Any],
     now: datetime,
 ) -> Candidate | None:
+    if _host_is_blocked(hit.url):
+        LOGGER.info("Rejeitado [%s]: fonte de discussao/social/video", hit.title)
+        return None
     page_text, links, final_url = fetch_page(hit.url)
+    if _host_is_blocked(final_url or hit.url):
+        LOGGER.info("Rejeitado [%s]: redirecionou para fonte bloqueada", hit.title)
+        return None
     combined = clean_space(" ".join([hit.title, hit.content, hit.raw_content, page_text]))
-    effective_url = final_url or hit.url
-    rejection = source_rejection_reason(effective_url, hit.title, combined)
-    if rejection:
-        LOGGER.info("Rejeitado [%s]: %s", hit.title, rejection)
+    if QUESTION_STYLE_RE.search(fold_text(hit.title)) or SPECULATIVE_RE.search(fold_text(combined)):
+        LOGGER.info("Rejeitado [%s]: pagina de pergunta ou linguagem especulativa", hit.title)
         return None
     evaluation = evaluate_offer(combined, now, int(config.get("min_score", 8)))
     if not evaluation.is_candidate:
         LOGGER.info(
-            "Rejeitado [%s]: score=%s expired=%s strong=%s azure=%s",
+            "Rejeitado [%s]: score=%s expired=%s strong=%s scope=%s",
             hit.title,
             evaluation.score,
             evaluation.expired,
             evaluation.has_strong_offer,
             evaluation.has_azure,
         )
+        return None
+
+    career_score, career_priority, matched_certs, career_reasons = career_match(combined, config)
+    if career_score <= 0:
+        career_score, career_priority, matched_certs, career_reasons = generic_career_scope(combined, config)
+    if career_score <= 0:
+        LOGGER.info("Rejeitado [%s]: voucher nao corresponde ao perfil de carreira", hit.title)
         return None
 
     has_future_date = any(item.value >= now.date() for item in evaluation.dates)
@@ -928,37 +931,23 @@ def build_candidate(
         LOGGER.info("Rejeitado [%s]: resultado publicado em %s sem data futura", hit.title, published_date)
         return None
 
-    signup_url, signup_score = rank_signup_link(effective_url, links)
-    source_is_registration = is_registration_page(effective_url, combined)
-    if signup_score < 5 and not source_is_registration:
-        LOGGER.info("Rejeitado [%s]: nenhum link verificável de inscrição/resgate", hit.title)
-        return None
-
-    has_future_registration = any(
-        signal.value >= now.date() and signal.is_registration and not signal.is_redemption
-        for signal in evaluation.dates
-    )
-    has_future_event = any(
-        signal.value >= now.date() and not signal.is_deadline and not signal.is_redemption
-        for signal in evaluation.dates
-    )
-    explicit_open = bool(OPEN_REGISTRATION_RE.search(fold_text(combined)))
-    if not (has_future_registration or has_future_event or explicit_open):
-        LOGGER.info("Rejeitado [%s]: inscrição ativa não pôde ser confirmada", hit.title)
-        return None
-
+    signup_url, signup_score = rank_signup_link(final_url or hit.url, links)
     reasons = list(evaluation.reasons)
     warnings = list(evaluation.warnings)
     adjusted_score = evaluation.score
     if signup_score >= 5:
         adjusted_score += 3
         reasons.append("link específico de inscrição identificado")
+    elif not SIGNUP_TERMS_RE.search(fold_text(combined)):
+        LOGGER.info("Rejeitado [%s]: sem inscricao/resgate identificavel", hit.title)
+        return None
     else:
-        signup_url = effective_url
-        adjusted_score += 2
-        reasons.append("a própria fonte é uma página de inscrição")
+        warnings.append("o link leva à página da oferta; confirme nela o botão de inscrição")
 
-    source_host = urlsplit(effective_url).netloc.lower()
+    adjusted_score += career_score
+    reasons.extend(career_reasons)
+
+    source_host = urlsplit(final_url or hit.url).netloc.lower()
     trusted_domains = tuple(str(item).lower() for item in config.get("trusted_domains", []))
     is_trusted_source = any(
         source_host == domain or source_host.endswith("." + domain) for domain in trusted_domains
@@ -983,7 +972,7 @@ def build_candidate(
     fingerprint_input = json.dumps(
         {
             "title": fold_text(hit.title),
-            "source": normalize_url(effective_url),
+            "source": normalize_url(final_url or hit.url),
             "signup": normalize_url(signup_url),
             "future_dates": future_dates,
             "evidence": [fold_text(item)[:240] for item in evidence],
@@ -994,10 +983,13 @@ def build_candidate(
     fingerprint = hashlib.sha256(fingerprint_input.encode("utf-8")).hexdigest()
     return Candidate(
         title=hit.title,
-        source_url=normalize_url(effective_url),
+        source_url=normalize_url(final_url or hit.url),
         signup_url=normalize_url(signup_url),
         confidence=confidence,
         score=adjusted_score,
+        career_priority=career_priority,
+        matched_certifications=matched_certs,
+        career_reason="; ".join(career_reasons),
         reasons=list(dict.fromkeys(reasons)),
         warnings=list(dict.fromkeys(warnings)),
         evidence=evidence,
@@ -1090,7 +1082,8 @@ def update_state(state: dict[str, Any], candidates: list[Candidate], now: dateti
 def _candidate_plain(candidate: Candidate, index: int) -> str:
     lines = [
         f"{index}. {candidate.title}",
-        f"Confiança: {candidate.confidence} | score: {candidate.score}",
+        f"Confiança: {candidate.confidence} | prioridade para sua carreira: {candidate.career_priority or 'n/a'} | score: {candidate.score}",
+        "Certificacao(s): " + (", ".join(candidate.matched_certifications) or "voucher generico relevante"),
         "Motivos: " + "; ".join(candidate.reasons),
     ]
     if candidate.future_dates:
@@ -1110,9 +1103,9 @@ def _candidate_plain(candidate: Candidate, index: int) -> str:
 
 def render_plain(candidates: list[Candidate], now: datetime) -> str:
     header = (
-        "Monitor de vouchers Azure — oportunidades novas\n"
+        "Monitor de vouchers de certificacao — oportunidades relevantes\n"
         f"Verificação: {now.strftime('%d/%m/%Y %H:%M %Z')}\n\n"
-        "O filtro exige menção a Azure e indício de voucher/exame com 100% de desconto. "
+        "O filtro exige exame/voucher 100% gratuito, inscricao ativa e aderencia ao seu perfil .NET/Azure/GitHub. "
         "Ainda assim, confirme elegibilidade, quantidade e prazo na página oficial.\n\n"
     )
     return header + "\n\n".join(_candidate_plain(item, i) for i, item in enumerate(candidates, 1))
@@ -1149,9 +1142,9 @@ def render_html(candidates: list[Candidate], now: datetime) -> str:
     return (
         "<!doctype html><html><body style='font-family:Arial,sans-serif;line-height:1.45;"
         "max-width:760px;margin:auto;padding:20px'>"
-        "<h1>Novos vouchers de certificação Azure</h1>"
+        "<h1>Novos vouchers de certificacao relevantes para sua carreira</h1>"
         f"<p>Verificação: {html.escape(now.strftime('%d/%m/%Y %H:%M %Z'))}</p>"
-        "<p>O filtro exige menção a Azure e indício de voucher/exame com 100% de desconto. "
+        "<p>O filtro exige exame/voucher 100% gratuito, inscricao ativa e aderencia ao seu perfil .NET/Azure/GitHub. "
         "Confirme elegibilidade, disponibilidade e prazo antes de contar com o benefício.</p>"
         + "".join(cards)
         + "</body></html>"
@@ -1193,7 +1186,7 @@ def send_email(candidates: list[Candidate], now: datetime) -> bool:
     if not settings or not recipients:
         return False
     subject = (
-        f"[Azure Voucher] {len(candidates)} oportunidade"
+        f"[Certificacao Gratis] {len(candidates)} oportunidade"
         + ("" if len(candidates) == 1 else "s")
         + " com 100% de desconto"
     )
@@ -1235,7 +1228,7 @@ def send_telegram(candidates: list[Candidate], now: datetime) -> bool:
     for index, candidate in enumerate(candidates, 1):
         reason_text = "; ".join(candidate.reasons)
         text = (
-            f"<b>Voucher Azure novo ({index}/{len(candidates)})</b>\n"
+            f"<b>Voucher relevante novo ({index}/{len(candidates)})</b>\n"
             f"<b>{html.escape(candidate.title)}</b>\n"
             f"Confiança: {html.escape(candidate.confidence)} | score: {candidate.score}\n"
             f"Motivos: {html.escape(reason_text)}\n"
@@ -1273,7 +1266,7 @@ def notify(candidates: list[Candidate], now: datetime) -> list[str]:
 
 def test_notification(now: datetime) -> int:
     candidate = Candidate(
-        title="Teste do monitor de vouchers Azure",
+        title="Teste do monitor de vouchers de carreira",
         source_url="https://learn.microsoft.com/credentials/",
         signup_url="https://learn.microsoft.com/credentials/",
         confidence="teste",
@@ -1336,7 +1329,8 @@ def run(args: argparse.Namespace) -> int:
         if candidate:
             candidates.append(candidate)
     candidates = unique_candidates(candidates)
-    candidates.sort(key=lambda item: (item.confidence == "alta", item.score), reverse=True)
+    priority_rank = {"essencial": 4, "alta": 3, "media": 2, "baixa": 1}
+    candidates.sort(key=lambda item: (priority_rank.get(item.career_priority, 0), item.confidence == "alta", item.score), reverse=True)
     LOGGER.info("%s candidato(s) após validação", len(candidates))
 
     if args.dry_run:
@@ -1380,7 +1374,7 @@ def run(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Busca vouchers Azure de 100% e envia alertas por e-mail/Telegram."
+        description="Busca vouchers de certificacao 100% gratuitos e relevantes para sua carreira e envia alertas por e-mail/Telegram."
     )
     parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Caminho do config.json")
     parser.add_argument("--state", default=str(DEFAULT_STATE), help="Caminho do estado JSON")
